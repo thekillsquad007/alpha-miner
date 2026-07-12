@@ -6,10 +6,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Linux ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -17,57 +22,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake
-          # OpenCL headers optional; we vendor CL headers for Windows, use system on Linux if present
-          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers || true
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake ca-certificates \
+            ocl-icd-opencl-dev opencl-headers
 
-      - name: Configure & build (CPU + OpenCL if available)
+      - name: Configure (CPU + OpenCL headers)
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DALPHA_MINER_HIP=OFF \
             -DALPHA_MINER_CUDA=OFF \
             -DALPHA_MINER_OPENCL=ON
-          cmake --build build -j$(nproc)
 
-      - name: Smoke test
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Sanity (no pool connect)
         run: |
-          ./build/alpha-miner -h
-          ./build/alpha-miner -b cpu -t 2 -o 127.0.0.1:9 -u test || true
+          ./build/alpha-miner -h | head -5
+          test -x ./build/alpha-miner
 
       - name: Package
         run: |
           OS_TAG="${{ matrix.os }}"
           mkdir -p dist
-          cp build/alpha-miner "dist/alpha-miner-${OS_TAG}-x64"
+          install -m 0755 build/alpha-miner "dist/alpha-miner-${OS_TAG}-x64"
           cp kernels/blake3_an.cl dist/
-          (cd dist && tar czf "alpha-miner-${OS_TAG}-x64.tar.gz" "alpha-miner-${OS_TAG}-x64" blake3_an.cl)
+          printf 'alpha-miner %s (CPU/OpenCL)\n2%% developer fee enabled.\n' "$OS_TAG" > dist/README.txt
+          (cd dist && tar czf "alpha-miner-${OS_TAG}-x64.tar.gz" \
+            "alpha-miner-${OS_TAG}-x64" blake3_an.cl README.txt)
 
       - uses: actions/upload-artifact@v4
         with:
           name: alpha-miner-${{ matrix.os }}-x64
           path: dist/alpha-miner-*.tar.gz
+          if-no-files-found: error
 
   windows:
-    name: Windows MSVC
+    name: Windows MSVC OpenCL
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build OpenCL import lib
         shell: cmd
         run: |
           if not exist third_party\OpenCL\lib mkdir third_party\OpenCL\lib
           dumpbin /exports C:\Windows\System32\OpenCL.dll > third_party\OpenCL\lib\exports_raw.txt
-          python -c "import re,pathlib; t=pathlib.Path('third_party/OpenCL/lib/exports_raw.txt').read_text(errors='ignore'); names=re.findall(r'\\s+\\d+\\s+[0-9A-Fa-f]+\\s+[0-9A-Fa-f]+\\s+(cl\\w+)', t); pathlib.Path('third_party/OpenCL/lib/OpenCL.def').write_text('LIBRARY OpenCL\\nEXPORTS\\n'+'\\n'.join('    '+n for n in names))"
+          python -c "import re,pathlib; t=pathlib.Path(r'third_party/OpenCL/lib/exports_raw.txt').read_text(errors='ignore'); names=re.findall(r'\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(cl\w+)', t); pathlib.Path(r'third_party/OpenCL/lib/OpenCL.def').write_text('LIBRARY OpenCL\nEXPORTS\n'+'\n'.join('    '+n for n in names)+'\n'); print(len(names),'exports')"
           lib /def:third_party\OpenCL\lib\OpenCL.def /out:third_party\OpenCL\lib\OpenCL.lib /machine:x64
 
-      - name: CMake configure & build
+      - name: CMake + build
         shell: cmd
         run: |
           set OpenCL_INCLUDE_DIR=%CD%\third_party\OpenCL\include
@@ -77,6 +86,11 @@ jobs:
           cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON -DOpenCL_INCLUDE_DIR="%OpenCL_INCLUDE_DIR%" -DOpenCL_LIBRARY="%OpenCL_LIBRARY%"
           if errorlevel 1 exit /b 1
           cmake --build build-win --config Release
+          if errorlevel 1 exit /b 1
+
+      - name: Sanity
+        shell: cmd
+        run: build-win\alpha-miner.exe -h
 
       - name: Package
         shell: pwsh
@@ -84,10 +98,44 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build-win\alpha-miner.exe dist\alpha-miner-windows-x64.exe
           Copy-Item kernels\blake3_an.cl dist\
-          Copy-Item scripts\mine-rplant.bat dist\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path dist\alpha-miner-windows-x64.exe,dist\blake3_an.cl -DestinationPath dist\alpha-miner-windows-x64.zip -Force
+          "alpha-miner windows-x64 OpenCL/CPU`n2% developer fee enabled." | Set-Content dist\README.txt
+          Compress-Archive -Path dist\alpha-miner-windows-x64.exe,dist\blake3_an.cl,dist\README.txt `
+            -DestinationPath dist\alpha-miner-windows-x64.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: alpha-miner-windows-x64
           path: dist/alpha-miner-windows-x64.zip
+
+  hiveos:
+    name: HiveOS custom miner package
+    needs: [linux]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: alpha-miner-ubuntu-22.04-x64
+          path: artifacts
+
+      - name: Assemble HiveOS custom miner tree
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/alpha
+          tar xzf artifacts/alpha-miner-ubuntu-22.04-x64.tar.gz -C artifacts
+          install -m 0755 artifacts/alpha-miner-ubuntu-22.04-x64 pkg/alpha/alpha
+          cp kernels/blake3_an.cl pkg/alpha/
+          cp hiveos/h-*.sh hiveos/h-manifest.conf hiveos/alpha-supervise.sh pkg/alpha/
+          chmod +x pkg/alpha/h-*.sh pkg/alpha/alpha-supervise.sh pkg/alpha/alpha
+          # HiveOS custom miner tarball: top-level folder = miner name
+          VER=$(grep CUSTOM_VERSION= pkg/alpha/h-manifest.conf | cut -d= -f2)
+          (cd pkg && tar czf "../alpha-hiveos-${VER}.tar.gz" alpha)
+          ls -la alpha-hiveos-*.tar.gz
+          tar tzf alpha-hiveos-*.tar.gz | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alpha-hiveos
+          path: alpha-hiveos-*.tar.gz

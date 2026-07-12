@@ -2,55 +2,64 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.2.0)"
+        description: "Release tag (e.g. v0.2.2)"
         required: true
-        default: "v0.2.0"
+        default: "v0.2.2"
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-release:
-    runs-on: ${{ matrix.os }}
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
+            kind: linux
             artifact: alpha-miner-ubuntu-22.04-x64.tar.gz
           - os: ubuntu-20.04
+            kind: linux
             artifact: alpha-miner-ubuntu-20.04-x64.tar.gz
           - os: windows-latest
+            kind: windows
             artifact: alpha-miner-windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux build
-        if: runner.os == 'Linux'
+      - name: Linux deps + build
+        if: matrix.kind == 'linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake ocl-icd-opencl-dev opencl-headers || true
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake ca-certificates ocl-icd-opencl-dev opencl-headers
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON
-          cmake --build build -j$(nproc)
+          cmake --build build -j"$(nproc)"
+          ./build/alpha-miner -h | head -3
           OS_TAG="${{ matrix.os }}"
           mkdir -p dist
-          cp build/alpha-miner "dist/alpha-miner-${OS_TAG}-x64"
+          install -m 0755 build/alpha-miner "dist/alpha-miner-${OS_TAG}-x64"
           cp kernels/blake3_an.cl dist/
-          printf 'alpha-miner %s\nblake3-an pool miner (CPU/OpenCL)\n2%% developer fee enabled.\n' "$OS_TAG" > dist/README.txt
+          printf 'alpha-miner %s\n2%% developer fee enabled.\n' "$OS_TAG" > dist/README.txt
           (cd dist && tar czf "${{ matrix.artifact }}" "alpha-miner-${OS_TAG}-x64" blake3_an.cl README.txt)
 
-      - name: Windows build
-        if: runner.os == 'Windows'
+      - name: Windows MSVC
+        if: matrix.kind == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Windows compile
-        if: runner.os == 'Windows'
+      - name: Windows build
+        if: matrix.kind == 'windows'
         shell: cmd
         run: |
           if not exist third_party\OpenCL\lib mkdir third_party\OpenCL\lib
@@ -60,64 +69,81 @@ jobs:
           set OpenCL_INCLUDE_DIR=%CD%\third_party\OpenCL\include
           set OpenCL_LIBRARY=%CD%\third_party\OpenCL\lib\OpenCL.lib
           cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON -DOpenCL_INCLUDE_DIR="%OpenCL_INCLUDE_DIR%" -DOpenCL_LIBRARY="%OpenCL_LIBRARY%"
-          if errorlevel 1 exit /b 1
           cmake --build build-win --config Release
+          build-win\alpha-miner.exe -h
           mkdir dist 2>nul
           copy /Y build-win\alpha-miner.exe dist\alpha-miner-windows-x64.exe
           copy /Y kernels\blake3_an.cl dist\
-          echo alpha-miner windows-x64 OpenCL/CPU > dist\README.txt
-          echo 2%% developer fee enabled. >> dist\README.txt
+          echo 2%% developer fee enabled. > dist\README.txt
           powershell -Command "Compress-Archive -Path dist\alpha-miner-windows-x64.exe,dist\blake3_an.cl,dist\README.txt -DestinationPath dist\alpha-miner-windows-x64.zip -Force"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.os }}
+          name: rel-${{ matrix.os }}
           path: dist/${{ matrix.artifact }}
 
+  hiveos:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rel-ubuntu-22.04
+          path: artifacts
+      - name: HiveOS package
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/alpha
+          tar xzf artifacts/alpha-miner-ubuntu-22.04-x64.tar.gz -C artifacts
+          install -m 0755 artifacts/alpha-miner-ubuntu-22.04-x64 pkg/alpha/alpha
+          cp kernels/blake3_an.cl pkg/alpha/
+          cp hiveos/* pkg/alpha/
+          chmod +x pkg/alpha/h-*.sh pkg/alpha/alpha-supervise.sh pkg/alpha/alpha
+          VER=$(grep CUSTOM_VERSION= pkg/alpha/h-manifest.conf | cut -d= -f2)
+          (cd pkg && tar czf "../alpha-hiveos-${VER}.tar.gz" alpha)
+          ls -la alpha-hiveos-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rel-hiveos
+          path: alpha-hiveos-*.tar.gz
+
   publish:
-    needs: build-and-release
+    needs: [build, hiveos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Collect assets
+      - name: Collect
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print -exec cp -v {} release-assets/ \;
           ls -la release-assets
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: alpha-miner ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          body: |
-            ## alpha-miner — Alphanumeric (blake3-an) pool miner
-
-            - **CPU** + **OpenCL** (AMD/NVIDIA) backends
-            - **2% developer fee** (dual stratum session)
-            - Pool protocol: monero-style login/job/submit
-            - Reference pool: `stratum+tcp://eu.rplant.xyz:7176`
-
-            ### Assets
-            | File | Platform |
-            |------|----------|
-            | `alpha-miner-ubuntu-22.04-x64.tar.gz` | Ubuntu 22.04 |
-            | `alpha-miner-ubuntu-20.04-x64.tar.gz` | Ubuntu 20.04 |
-            | `alpha-miner-windows-x64.zip` | Windows x64 (OpenCL) |
-
-            ### Usage
-            ```bash
-            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.worker -b opencl -k blake3_an.cl
-            ```
-            ```bat
-            alpha-miner-windows-x64.exe -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.worker -b opencl -k blake3_an.cl
-            ```
-
-            HIP (ROCm/WSL) builds: build from source with `scripts/build-hip.sh`.
-          files: release-assets/*
           generate_release_notes: true
+          body: |
+            ## alpha-miner
+
+            - CPU + OpenCL (AMD/NVIDIA) · **2% developer fee**
+            - Ubuntu 20.04 / 22.04 · Windows x64 · **HiveOS custom miner**
+
+            ### HiveOS
+            Install the `alpha-hiveos-*.tar.gz` as a **custom miner** package (folder name `alpha`).
+            Flight sheet:
+            - **Wallet**: your 40-hex ALPHA address (optional `.worker`)
+            - **Pool URL**: `stratum+tcp://eu.rplant.xyz:7176` (or host:port)
+            - **Pass**: `x`
+            - **Algo / Extra**: `-b opencl` or leave empty for auto
+
+            ### Pool
+            `stratum+tcp://eu.rplant.xyz:7176` · algo `blake3-an`
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
