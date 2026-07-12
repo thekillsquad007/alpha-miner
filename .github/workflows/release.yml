@@ -57,7 +57,10 @@ jobs:
           dumpbin /exports C:\Windows\System32\OpenCL.dll > third_party\OpenCL\lib\exports_raw.txt
           python -c "import re,pathlib; t=pathlib.Path(r'third_party/OpenCL/lib/exports_raw.txt').read_text(errors='ignore'); names=re.findall(r'\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(cl\w+)', t); pathlib.Path(r'third_party/OpenCL/lib/OpenCL.def').write_text('LIBRARY OpenCL\nEXPORTS\n'+'\n'.join('    '+n for n in names)+'\n')"
           lib /def:third_party\OpenCL\lib\OpenCL.def /out:third_party\OpenCL\lib\OpenCL.lib /machine:x64
-          cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON
+          set OpenCL_INCLUDE_DIR=%CD%\third_party\OpenCL\include
+          set OpenCL_LIBRARY=%CD%\third_party\OpenCL\lib\OpenCL.lib
+          cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON -DOpenCL_INCLUDE_DIR="%OpenCL_INCLUDE_DIR%" -DOpenCL_LIBRARY="%OpenCL_LIBRARY%"
+          if errorlevel 1 exit /b 1
           cmake --build build-win --config Release
           mkdir dist 2>nul
           copy /Y build-win\alpha-miner.exe dist\alpha-miner-windows-x64.exe

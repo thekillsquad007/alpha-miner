@@ -70,7 +70,12 @@ jobs:
       - name: CMake configure & build
         shell: cmd
         run: |
-          cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON
+          set OpenCL_INCLUDE_DIR=%CD%\third_party\OpenCL\include
+          set OpenCL_LIBRARY=%CD%\third_party\OpenCL\lib\OpenCL.lib
+          if not exist "%OpenCL_LIBRARY%" exit /b 1
+          if not exist "%OpenCL_INCLUDE_DIR%\CL\cl.h" exit /b 1
+          cmake -S . -B build-win -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF -DALPHA_MINER_CUDA=OFF -DALPHA_MINER_OPENCL=ON -DOpenCL_INCLUDE_DIR="%OpenCL_INCLUDE_DIR%" -DOpenCL_LIBRARY="%OpenCL_LIBRARY%"
+          if errorlevel 1 exit /b 1
           cmake --build build-win --config Release
 
       - name: Package
