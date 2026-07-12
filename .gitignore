@@ -1,0 +1,25 @@
+build/
+build-*/
+build-hip/
+build-win/
+cmake-build-*/
+dist/
+*.o
+*.a
+*.exe
+*.lib
+*.exp
+*.obj
+.DS_Store
+.vscode/
+.idea/
+secrets/
+third_party/OpenCL/lib/exports*
+third_party/OpenCL/lib/OpenCL.def
+third_party/OpenCL/lib/OpenCL.exp
+# keep OpenCL.lib optional; regenerate on Windows
+tmp/
+target/
+
+secrets/
+
