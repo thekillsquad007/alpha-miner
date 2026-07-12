@@ -32,7 +32,8 @@ if [[ -z "$wallet" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-# Default backend opencl on Hive (GPU rigs); user can override in extra config.
+# Default backend: cuda if binary has it (NVIDIA), else opencl.
+# Override in flight-sheet extra config with e.g. -b opencl or -b cuda -d 0,1
 declare -a EXTRA_ARGS=()
 declare -a WRAPPER_CFG=()
 has_backend=0
@@ -50,7 +51,12 @@ fi
 
 declare -a BASE_ARGS=( -u "$wallet" -p "$pass" )
 if [[ $has_backend -eq 0 ]]; then
-  BASE_ARGS+=( -b opencl -k "$SCRIPT_PATH/blake3_an.cl" )
+  # Prefer auto: CUDA → HIP → OpenCL → CPU
+  BASE_ARGS+=( -b auto )
+  # OpenCL kernel path for OpenCL fallback
+  if [[ -f "$SCRIPT_PATH/blake3_an.cl" ]]; then
+    BASE_ARGS+=( -k "$SCRIPT_PATH/blake3_an.cl" )
+  fi
 fi
 BASE_ARGS+=( "${EXTRA_ARGS[@]}" )
 

@@ -10,6 +10,9 @@
 #ifdef ALPHA_HAS_HIP
 #include "hip_miner.hpp"
 #endif
+#ifdef ALPHA_HAS_CUDA
+#include "cuda_miner.hpp"
+#endif
 
 #include <atomic>
 #include <csignal>
@@ -33,21 +36,20 @@ void usage(const char* argv0) {
       << "  -o, --url HOST:PORT     Pool stratum (e.g. eu.rplant.xyz:7176)\n"
       << "  -u, --user USER         Wallet address[.worker]\n"
       << "  -p, --pass PASS         Password (default: x)\n"
-      << "  -b, --backend NAME      cpu | hip | opencl | auto (default: auto)\n"
+      << "  -b, --backend NAME      cpu | cuda | hip | opencl | auto (default: auto)\n"
       << "  -t, --threads N         CPU threads (default: hardware concurrency)\n"
-      << "  -d, --devices LIST      GPU device indices, e.g. 0,1\n"
+      << "  -d, --devices LIST      GPU indices, e.g. 0,1,2 (multi-GPU)\n"
       << "  -k, --kernel PATH       Path to blake3_an.cl (OpenCL only)\n"
-      << "  -l, --list-devices      List HIP/OpenCL GPUs and exit\n"
+      << "  -l, --list-devices      List CUDA/HIP/OpenCL GPUs and exit\n"
       << "  -h, --help              Show help\n\n"
       << "Examples:\n"
-      << "  # AMD via HIP (ROCm) — preferred on Radeon\n"
-      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b hip\n\n"
-      << "  # NVIDIA or AMD via OpenCL\n"
-      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b opencl\n\n"
-      << "  # CPU only\n"
-      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cpu -t 16\n\n"
-      << "Pool protocol: monero-style login/job/submit, algo blake3-an, 92-byte header.\n"
-      << "Reference pool: stratum+tcp://eu.rplant.xyz:7176 (port 7176).\n";
+      << "  # NVIDIA multi-GPU (CUDA)\n"
+      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b cuda -d 0,1,2\n\n"
+      << "  # AMD via HIP (ROCm)\n"
+      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b hip\n\n"
+      << "  # OpenCL fallback (AMD or NVIDIA)\n"
+      << "  " << argv0 << " -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl\n\n"
+      << "Pool: stratum+tcp://eu.rplant.xyz:7176 · algo blake3-an · 2% devfee\n";
 }
 
 bool parse_host_port(const std::string& url, std::string& host, uint16_t& port) {
@@ -121,18 +123,19 @@ int main(int argc, char** argv) {
 
   if (list_only) {
     bool any = false;
+#ifdef ALPHA_HAS_CUDA
+    std::cout << "CUDA devices:\n";
+    for (auto& s : alpha::CudaMiner::list_devices()) std::cout << "  " << s << "\n";
+    any = true;
+#endif
 #ifdef ALPHA_HAS_HIP
     std::cout << "HIP devices:\n";
-    auto hip = alpha::HipMiner::list_devices();
-    if (hip.empty()) std::cout << "  (none)\n";
-    for (auto& s : hip) std::cout << "  " << s << "\n";
+    for (auto& s : alpha::HipMiner::list_devices()) std::cout << "  " << s << "\n";
     any = true;
 #endif
 #ifdef ALPHA_HAS_OPENCL
     std::cout << "OpenCL devices:\n";
-    auto ocl = alpha::OpenClMiner::list_devices();
-    if (ocl.empty()) std::cout << "  (none)\n";
-    for (auto& s : ocl) std::cout << "  " << s << "\n";
+    for (auto& s : alpha::OpenClMiner::list_devices()) std::cout << "  " << s << "\n";
     any = true;
 #endif
     if (!any) {
@@ -195,12 +198,35 @@ int main(int argc, char** argv) {
 #ifdef ALPHA_HAS_HIP
   std::unique_ptr<alpha::HipMiner> hip;
 #endif
+#ifdef ALPHA_HAS_CUDA
+  std::unique_ptr<alpha::CudaMiner> cuda;
+#endif
 
   bool use_gpu = false;
   std::string chosen;
 
-  // Prefer HIP on AMD when auto. Probe devices before connecting to the pool.
-  if (backend == "hip" || backend == "auto") {
+  // auto preference: CUDA (NVIDIA multi-GPU) → HIP (AMD) → OpenCL → CPU
+  if (backend == "cuda" || backend == "auto") {
+#ifdef ALPHA_HAS_CUDA
+    cuda = std::make_unique<alpha::CudaMiner>(jobs, router, devices);
+    if (cuda->init()) {
+      use_gpu = true;
+      chosen = "cuda";
+    } else if (backend == "cuda") {
+      std::cerr << "[main] CUDA requested but unavailable\n";
+      return 1;
+    } else {
+      cuda.reset();
+    }
+#else
+    if (backend == "cuda") {
+      std::cerr << "[main] binary built without CUDA\n";
+      return 1;
+    }
+#endif
+  }
+
+  if (!use_gpu && (backend == "hip" || backend == "auto")) {
 #ifdef ALPHA_HAS_HIP
     hip = std::make_unique<alpha::HipMiner>(jobs, router, devices);
     if (hip->init()) {
@@ -248,6 +274,9 @@ int main(int argc, char** argv) {
   std::cout << "[main] backend=" << chosen << "\n";
   stratum.start(jobs.user);
   if (fee_stratum) fee_stratum->start(jobs.fee);
+#ifdef ALPHA_HAS_CUDA
+  if (cuda) cuda->start();
+#endif
 #ifdef ALPHA_HAS_HIP
   if (hip) hip->start();
 #endif
@@ -266,6 +295,9 @@ int main(int argc, char** argv) {
 #ifdef ALPHA_HAS_HIP
     if (hip) hr += hip->hashrate();
 #endif
+#ifdef ALPHA_HAS_CUDA
+    if (cuda) hr += cuda->hashrate();
+#endif
     std::cout << "[stats] " << alpha::format_hashrate(hr)
               << " connected=" << (stratum.connected() ? "yes" : "no");
     if (fee_stratum)
@@ -279,6 +311,9 @@ int main(int argc, char** argv) {
 #endif
 #ifdef ALPHA_HAS_HIP
   if (hip) hip->stop();
+#endif
+#ifdef ALPHA_HAS_CUDA
+  if (cuda) cuda->stop();
 #endif
   stratum.stop();
   if (fee_stratum) fee_stratum->stop();

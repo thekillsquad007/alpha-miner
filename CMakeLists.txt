@@ -7,7 +7,7 @@ set(CMAKE_C_STANDARD 11)
 
 option(ALPHA_MINER_OPENCL "Build OpenCL backend (AMD + NVIDIA)" ON)
 option(ALPHA_MINER_HIP "Build HIP backend (AMD ROCm)" ON)
-option(ALPHA_MINER_CUDA "Build CUDA backend (NVIDIA)" OFF)
+option(ALPHA_MINER_CUDA "Build CUDA multi-GPU backend (NVIDIA)" ON)
 
 # Portable BLAKE3 only — no assembly, works everywhere.
 set(BLAKE3_DIR ${CMAKE_SOURCE_DIR}/third_party/blake3)
@@ -116,13 +116,30 @@ if(ALPHA_MINER_HIP)
   endif()
 endif()
 
-# --- CUDA (NVIDIA) ---
+# --- CUDA multi-GPU (NVIDIA) ---
 if(ALPHA_MINER_CUDA)
-  enable_language(CUDA)
-  target_sources(alpha-miner PRIVATE src/cuda_miner.cu)
-  target_compile_definitions(alpha-miner PRIVATE ALPHA_HAS_CUDA=1)
-  set_target_properties(alpha-miner PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-  message(STATUS "CUDA backend: ENABLED")
+  include(CheckLanguage)
+  check_language(CUDA)
+  if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    target_sources(alpha-miner PRIVATE src/cuda_miner.cu)
+    target_compile_definitions(alpha-miner PRIVATE ALPHA_HAS_CUDA=1)
+    set_target_properties(alpha-miner PROPERTIES
+      CUDA_SEPARABLE_COMPILATION OFF
+      CUDA_ARCHITECTURES "75;80;86;89;90"
+    )
+    # Ensure host C++ objects can link CUDA runtime
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+      target_link_libraries(alpha-miner PRIVATE CUDA::cudart)
+    else()
+      target_link_libraries(alpha-miner PRIVATE cudart)
+    endif()
+    message(STATUS "CUDA backend: ENABLED (${CMAKE_CUDA_COMPILER})")
+  else()
+    message(STATUS "CUDA backend: disabled (nvcc not found)")
+  endif()
 endif()
 
 install(TARGETS alpha-miner RUNTIME DESTINATION bin)
