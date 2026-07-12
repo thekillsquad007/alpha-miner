@@ -19,7 +19,7 @@ cmake -S "$ROOT" -B "$ROOT/build-cuda" \
   -DALPHA_MINER_CUDA=ON \
   -DALPHA_MINER_HIP=OFF \
   -DALPHA_MINER_OPENCL=OFF \
-  -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
+  -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;100;120"
 
 cmake --build "$ROOT/build-cuda" -j"$(nproc)"
 

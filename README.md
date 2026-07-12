@@ -19,7 +19,7 @@ Open-source **Alphanumeric (ALPHA)** pool miner for **NVIDIA and AMD** GPUs.
 | **HIP** | **AMD Radeon (ROCm)** — preferred | `-DALPHA_MINER_HIP=ON` (default if `hipcc` found) |
 | **OpenCL** | AMD + NVIDIA | `-DALPHA_MINER_OPENCL=ON` |
 | **CPU** | any x86_64 | always |
-| **CUDA** | NVIDIA | optional; or use [gpuminer-rplant-cuda](https://github.com/rplant-pool/gpuminer-rplant/releases) |
+| **CUDA** | NVIDIA multi-GPU (sm_75–sm_120 incl. 30/40/50-series) | `-DALPHA_MINER_CUDA=ON` / release asset `alpha-miner-linux-cuda-x64` |
 
 ## Quick start
 

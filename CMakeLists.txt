@@ -127,7 +127,11 @@ if(ALPHA_MINER_CUDA)
     target_compile_definitions(alpha-miner PRIVATE ALPHA_HAS_CUDA=1)
     set_target_properties(alpha-miner PROPERTIES
       CUDA_SEPARABLE_COMPILATION OFF
-      CUDA_ARCHITECTURES "75;80;86;89;90"
+      CUDA_ARCHITECTURES "75;80;86;89;90;100;120"
+    )
+    # Cap regs so search_kernel fits many blocks/SM (Blackwell was spilling to 128 regs).
+    target_compile_options(alpha-miner PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--maxrregcount=64>
     )
     # Ensure host C++ objects can link CUDA runtime
     find_package(CUDAToolkit QUIET)
