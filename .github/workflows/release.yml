@@ -129,20 +129,65 @@ jobs:
           body: |
             ## alpha-miner
 
-            - CPU + OpenCL (AMD/NVIDIA) · **2% developer fee**
-            - **Ubuntu 22.04** Linux binary · Windows x64 · **HiveOS** (uses the 22.04 build)
+            **Algo** `blake3-an` · **Fee** 2% · **Pool** `stratum+tcp://eu.rplant.xyz:7176` (also `na` / `asia`)
+
+            Full guide: [docs/USAGE.md](https://github.com/thekillsquad007/alpha-miner/blob/main/docs/USAGE.md)
+
+            ### Which download?
+
+            | Asset | Use when |
+            |-------|----------|
+            | `alpha-miner-linux-cuda-x64-*.tar.gz` | **NVIDIA** Linux (attach CUDA build if not in CI) |
+            | `alpha-miner-ubuntu-22.04-x64.tar.gz` | Linux OpenCL/CPU (AMD or NVIDIA) |
+            | `alpha-miner-windows-x64.zip` | Windows OpenCL/CPU |
+            | `alpha-hiveos-*.tar.gz` | HiveOS custom miner (`alpha` folder) |
+
+            ### NVIDIA Linux (CUDA)
+
+            ```bash
+            tar xzf alpha-miner-linux-cuda-x64-*.tar.gz
+            ./alpha-miner-linux-cuda-x64 -l
+            ./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -p x -b cuda
+            ./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b cuda -d 0,1,2
+            ```
+
+            ### Linux OpenCL (AMD or NVIDIA)
+
+            ```bash
+            tar xzf alpha-miner-ubuntu-22.04-x64.tar.gz
+            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -k blake3_an.cl
+            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -d 0,1 -k blake3_an.cl
+            ```
+
+            ### Windows
+
+            ```powershell
+            Expand-Archive alpha-miner-windows-x64.zip -DestinationPath alpha-miner
+            cd alpha-miner
+            .\alpha-miner-windows-x64.exe -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -k blake3_an.cl
+            .\alpha-miner-windows-x64.exe -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -d 0,1
+            ```
 
             ### HiveOS
-            Install `alpha-hiveos-*.tar.gz` as a **custom miner** (folder name `alpha`).
-            Binary is the **Ubuntu 22.04** OpenCL build.
-            Flight sheet:
-            - **Wallet**: your 40-hex ALPHA address (optional `.worker`)
-            - **Pool URL**: `stratum+tcp://eu.rplant.xyz:7176`
-            - **Pass**: `x`
-            - **Extra**: `-b opencl` or leave empty for auto
 
-            ### Pool
-            `stratum+tcp://eu.rplant.xyz:7176` · algo `blake3-an`
+            Install `alpha-hiveos-*.tar.gz` as **custom miner** (name `alpha`).
+
+            | Flight sheet | Value |
+            |--------------|--------|
+            | Wallet | `YOUR_ADDRESS.worker` |
+            | Pool URL | `stratum+tcp://eu.rplant.xyz:7176` |
+            | Pass | `x` |
+            | Extra | `-b opencl` or `-b opencl -d 0,1,2` (empty = auto) |
+
+            ### CPU
+
+            ```bash
+            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.cpu1 -b cpu -t 16
+            ```
+
+            ### Flags
+
+            `-o` pool · `-u` wallet.worker · `-p` pass · `-b` cuda\|hip\|opencl\|cpu\|auto · `-d` GPUs · `-k` OpenCL kernel · `-l` list GPUs · `-t` CPU threads
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

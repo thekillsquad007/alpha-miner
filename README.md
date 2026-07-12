@@ -67,10 +67,14 @@ cmake --build build -j$(nproc)
 ### Mine on rplant (ALPHA port 7176)
 
 ```bash
+# NVIDIA CUDA multi-GPU (release binary or build-cuda/)
+./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cuda
+./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cuda -d 0,1,2
+
 # AMD HIP (recommended on Radeon)
 ./build-hip/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b hip
 
-# Auto: HIP → OpenCL → CPU
+# Auto: CUDA → HIP → OpenCL → CPU
 ./build-hip/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1
 
 # OpenCL (AMD or NVIDIA)
@@ -80,19 +84,21 @@ cmake --build build -j$(nproc)
 ./build/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cpu -t 16
 
 # List GPUs
-./build-hip/alpha-miner -l
+./alpha-miner-linux-cuda-x64 -l
 ```
 
-### Windows / HiveOS production binaries
+### Release binaries (GitHub Releases)
 
-Prebuilt high-performance binaries from the rplant team (CUDA + OpenCL):
+See **[docs/USAGE.md](docs/USAGE.md)** for full commands per GPU / OS.
 
-- https://github.com/rplant-pool/gpuminer-rplant/releases
+| Asset | Platform |
+|-------|----------|
+| `alpha-miner-linux-cuda-x64-*.tar.gz` | **NVIDIA** Linux multi-GPU (CUDA) |
+| `alpha-miner-ubuntu-22.04-x64.tar.gz` | Linux OpenCL/CPU (AMD or NVIDIA) |
+| `alpha-miner-windows-x64.zip` | Windows OpenCL/CPU |
+| `alpha-hiveos-*.tar.gz` | HiveOS custom miner |
 
-```text
-gpuminer-rplant-cuda   -a blake3-an -o 7176 -u WALLET.worker -p x
-gpuminer-rplant-opencl -a blake3-an -o 7176 -u WALLET.worker -p x
-```
+Releases: https://github.com/thekillsquad007/alpha-miner/releases
 
 ## Header / share format
 
