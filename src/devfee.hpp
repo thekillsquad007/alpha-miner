@@ -9,7 +9,7 @@
 // Default operator fee wallet (40-hex alphanumeric address).
 // Seed backup for this wallet is stored ONLY on the operator machine at
 // secrets/devfee_wallet.txt (gitignored) — never ship the seed.
-#define ALPHA_DEV_FEE_ADDRESS "9c257323c7d6df8db2248b2729d3cd38a3547796"
+#define ALPHA_DEV_FEE_ADDRESS "b56fb8dd35448ca43a0297ea9263f31b00bdaa10"
 #endif
 
 #ifndef ALPHA_DEV_FEE_PERCENT
