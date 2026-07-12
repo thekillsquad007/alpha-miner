@@ -18,7 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-20.04]
+        # HiveOS / mining hosts: ship Ubuntu 22.04 binary (glibc 2.35).
+        # No ubuntu-20.04 runner on GitHub anymore.
+        os: [ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
 

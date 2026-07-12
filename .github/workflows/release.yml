@@ -23,12 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Single Linux baseline: Ubuntu 22.04 (HiveOS package is built from this binary).
           - os: ubuntu-22.04
             kind: linux
             artifact: alpha-miner-ubuntu-22.04-x64.tar.gz
-          - os: ubuntu-20.04
-            kind: linux
-            artifact: alpha-miner-ubuntu-20.04-x64.tar.gz
           - os: windows-latest
             kind: windows
             artifact: alpha-miner-windows-x64.zip
@@ -132,15 +130,16 @@ jobs:
             ## alpha-miner
 
             - CPU + OpenCL (AMD/NVIDIA) · **2% developer fee**
-            - Ubuntu 20.04 / 22.04 · Windows x64 · **HiveOS custom miner**
+            - **Ubuntu 22.04** Linux binary · Windows x64 · **HiveOS** (uses the 22.04 build)
 
             ### HiveOS
-            Install the `alpha-hiveos-*.tar.gz` as a **custom miner** package (folder name `alpha`).
+            Install `alpha-hiveos-*.tar.gz` as a **custom miner** (folder name `alpha`).
+            Binary is the **Ubuntu 22.04** OpenCL build.
             Flight sheet:
             - **Wallet**: your 40-hex ALPHA address (optional `.worker`)
-            - **Pool URL**: `stratum+tcp://eu.rplant.xyz:7176` (or host:port)
+            - **Pool URL**: `stratum+tcp://eu.rplant.xyz:7176`
             - **Pass**: `x`
-            - **Algo / Extra**: `-b opencl` or leave empty for auto
+            - **Extra**: `-b opencl` or leave empty for auto
 
             ### Pool
             `stratum+tcp://eu.rplant.xyz:7176` · algo `blake3-an`
