@@ -1,5 +1,7 @@
 #include "util.hpp"
 #include "blake3.h"
+#include "sha3.hpp"
+
 #include <cstdio>
 #include <chrono>
 #include <stdexcept>
@@ -33,12 +35,17 @@ std::vector<uint8_t> from_hex(const std::string& hex) {
 }
 
 bool hash_meets_target(const uint8_t hash[32], const uint8_t target[32]) {
-  // Big-endian compare: hash <= target
   for (int i = 0; i < 32; ++i) {
     if (hash[i] < target[i]) return true;
     if (hash[i] > target[i]) return false;
   }
   return true;
+}
+
+bool hash_meets_job_target(const uint8_t hash[32], const miner::Job& job) {
+  if (job.target_mode == miner::TargetMode::LittleEndianUint)
+    return miner::hash_meets_target_le(hash, job.target.data());
+  return hash_meets_target(hash, job.target.data());
 }
 
 uint64_t now_ms() {
@@ -48,11 +55,16 @@ uint64_t now_ms() {
 
 std::string format_hashrate(double hps) {
   char buf[64];
-  if (hps >= 1e12) std::snprintf(buf, sizeof(buf), "%.2f TH/s", hps / 1e12);
-  else if (hps >= 1e9) std::snprintf(buf, sizeof(buf), "%.2f GH/s", hps / 1e9);
-  else if (hps >= 1e6) std::snprintf(buf, sizeof(buf), "%.2f MH/s", hps / 1e6);
-  else if (hps >= 1e3) std::snprintf(buf, sizeof(buf), "%.2f kH/s", hps / 1e3);
-  else std::snprintf(buf, sizeof(buf), "%.0f H/s", hps);
+  if (hps >= 1e12)
+    std::snprintf(buf, sizeof(buf), "%.2f TH/s", hps / 1e12);
+  else if (hps >= 1e9)
+    std::snprintf(buf, sizeof(buf), "%.2f GH/s", hps / 1e9);
+  else if (hps >= 1e6)
+    std::snprintf(buf, sizeof(buf), "%.2f MH/s", hps / 1e6);
+  else if (hps >= 1e3)
+    std::snprintf(buf, sizeof(buf), "%.2f kH/s", hps / 1e3);
+  else
+    std::snprintf(buf, sizeof(buf), "%.0f H/s", hps);
   return buf;
 }
 
@@ -61,6 +73,17 @@ void blake3_header(const uint8_t header[92], uint8_t out[32]) {
   blake3_hasher_init(&hasher);
   blake3_hasher_update(&hasher, header, 92);
   blake3_hasher_finalize(&hasher, out, 32);
+}
+
+void hash_job_header(const miner::Job& job, const uint8_t* header, uint8_t out[32]) {
+  switch (job.algo) {
+    case miner::AlgoId::Blake3An:
+      blake3_header(header, out);
+      break;
+    case miner::AlgoId::Sha3d:
+      miner::sha3_256d_header80(header, out);
+      break;
+  }
 }
 
 }  // namespace alpha

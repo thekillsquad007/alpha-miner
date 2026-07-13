@@ -294,12 +294,17 @@ std::vector<std::string> HipMiner::list_devices() {
   return out;
 }
 
-HipMiner::HipMiner(JobMux& jobs, ShareRouter& router, const std::vector<int>& devices)
-    : jobs_(jobs), router_(router), devices_(devices) {}
+HipMiner::HipMiner(miner::JobMux& jobs, miner::IShareSink& sink, const std::vector<int>& devices,
+                   miner::AlgoId algo)
+    : jobs_(jobs), sink_(sink), devices_(devices), algo_(algo) {}
 
 HipMiner::~HipMiner() { stop(); }
 
 bool HipMiner::init() {
+  if (algo_ != miner::AlgoId::Blake3An) {
+    std::cerr << "[hip] only blake3-an on HIP; use OpenCL/CUDA for sha3d (Lattica)\n";
+    return false;
+  }
   int n = device_count();
   if (n <= 0) {
     std::cerr << "[hip] no AMD GPU devices (hipGetDeviceCount=" << n << ")\n";
@@ -414,10 +419,10 @@ void HipMiner::worker(int device_id, int logical_id) {
       }
       const uint64_t epoch = job.epoch;
       const bool fee = job.is_devfee;
-      const uint64_t hi = job.extranonce_hi;
+      const uint64_t hi = job.nonce_fixed;
 
       uint32_t words[23] = {};
-      words_from_bytes(job.blob.data(), 92, words);
+      words_from_bytes(job.header.data(), 92, words);
       words[11] = 0;
       words[12] = 0;
       uint32_t twords[8] = {};
@@ -452,12 +457,12 @@ void HipMiner::worker(int device_id, int logical_id) {
             // shouldn't happen if cursor kept hi bits
           }
           uint8_t header[92];
-          std::memcpy(header, job.blob.data(), 92);
+          std::memcpy(header, job.header.data(), 92);
           for (int i = 0; i < 8; ++i)
             header[44 + i] = static_cast<uint8_t>((nonce >> (8 * i)) & 0xff);
           uint8_t hash[32];
           blake3_header(header, hash);
-          if (hash_meets_target(hash, job.target.data())) {
+          if (hash_meets_job_target(hash, job)) {
             Share s;
             s.job_id = job.job_id;
             s.nonce = nonce;
@@ -466,7 +471,7 @@ void HipMiner::worker(int device_id, int logical_id) {
             s.is_devfee = fee;
             std::cout << (fee ? "[hip/fee] " : "[hip] ") << "share nonce=" << to_hex(header + 44, 8)
                       << " hash=" << to_hex(hash, 8) << "...\n";
-            router_.submit(s);
+            sink_.submit(s);
           } else {
             std::cerr << "[hip] GPU hit failed CPU verify (ignored)\n";
           }

@@ -231,17 +231,23 @@ void StratumClient::handle_line(const std::string& line, JobBoard& board) {
       return;
     }
     Job j;
+    j.algo = miner::AlgoId::Blake3An;
+    j.target_mode = miner::TargetMode::BigEndianBytes;
+    j.header_len = 92;
+    j.nonce_off = 44;
+    j.nonce_bytes = 8;
+    j.nonce_mask = 0x0000FFFFFFFFFFFFULL;
     j.job_id = job_id;
     j.height = height;
     j.is_devfee = is_devfee_;
-    std::copy(blob.begin(), blob.end(), j.blob.begin());
+    std::copy(blob.begin(), blob.end(), j.header.begin());
     std::copy(target.begin(), target.end(), j.target.begin());
-    uint64_t base = j.base_nonce();
-    j.extranonce_hi = base & 0xFFFF000000000000ULL;
+    uint64_t base = j.read_nonce();
+    j.nonce_fixed = base & 0xFFFF000000000000ULL;
     board.set(j);
     std::cout << (is_devfee_ ? "[job/fee] " : "[job] ") << "id=" << job_id
               << " height=" << height << " extranonce_hi=0x" << std::hex
-              << (j.extranonce_hi >> 48) << std::dec << std::endl;
+              << (j.nonce_fixed >> 48) << std::dec << std::endl;
   }
 
   if (line.find("\"method\":\"job\"") == std::string::npos) {

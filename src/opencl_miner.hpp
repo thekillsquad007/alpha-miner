@@ -1,7 +1,6 @@
 #pragma once
 #ifdef ALPHA_HAS_OPENCL
-#include "job.hpp"
-#include "stratum.hpp"
+#include "core_types.hpp"
 #include <atomic>
 #include <string>
 #include <thread>
@@ -11,8 +10,8 @@ namespace alpha {
 
 class OpenClMiner {
  public:
-  OpenClMiner(JobMux& jobs, ShareRouter& router, std::string kernel_path,
-             const std::vector<int>& devices);
+  OpenClMiner(miner::JobMux& jobs, miner::IShareSink& sink, std::string kernel_dir,
+             const std::vector<int>& devices, miner::AlgoId algo);
   ~OpenClMiner();
   bool init();
   void start();
@@ -22,10 +21,14 @@ class OpenClMiner {
 
  private:
   void worker(int device_index, int logical_id);
-  JobMux& jobs_;
-  ShareRouter& router_;
-  std::string kernel_path_;
+  void worker_blake3(int device_index, int logical_id);
+  void worker_sha3d(int device_index, int logical_id);
+
+  miner::JobMux& jobs_;
+  miner::IShareSink& sink_;
+  std::string kernel_dir_;
   std::vector<int> devices_;
+  miner::AlgoId algo_;
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> hashes_{0};
   std::vector<std::thread> workers_;

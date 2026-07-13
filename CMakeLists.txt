@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
 option(ALPHA_MINER_OPENCL "Build OpenCL backend (AMD + NVIDIA)" ON)
-option(ALPHA_MINER_HIP "Build HIP backend (AMD ROCm)" ON)
+option(ALPHA_MINER_HIP "Build HIP backend (AMD ROCm, blake3-an)" ON)
 option(ALPHA_MINER_CUDA "Build CUDA multi-GPU backend (NVIDIA)" ON)
 
 # Portable BLAKE3 only — no assembly, works everywhere.
@@ -28,8 +28,11 @@ target_compile_definitions(blake3_portable PUBLIC
 set(ALPHA_SOURCES
   src/main.cpp
   src/stratum.cpp
+  src/stratum_btc.cpp
   src/cpu_miner.cpp
   src/util.cpp
+  src/sha3.cpp
+  src/coin_registry.cpp
 )
 
 add_executable(alpha-miner ${ALPHA_SOURCES})
@@ -44,10 +47,10 @@ endif()
 
 # --- OpenCL (AMD + NVIDIA) ---
 if(ALPHA_MINER_OPENCL)
-  # Prefer vendored headers/lib (Windows builds ship them under third_party/OpenCL).
   set(_OCL_INC "${CMAKE_SOURCE_DIR}/third_party/OpenCL/include")
   set(_OCL_LIB "${CMAKE_SOURCE_DIR}/third_party/OpenCL/lib/OpenCL.lib")
-  if(EXISTS "${_OCL_INC}/CL/cl.h" AND EXISTS "${_OCL_LIB}")
+  # Vendored import lib is Windows-only; on Unix always use system OpenCL.
+  if(WIN32 AND EXISTS "${_OCL_INC}/CL/cl.h" AND EXISTS "${_OCL_LIB}")
     target_sources(alpha-miner PRIVATE src/opencl_miner.cpp)
     target_compile_definitions(alpha-miner PRIVATE ALPHA_HAS_OPENCL=1)
     target_include_directories(alpha-miner PRIVATE "${_OCL_INC}")
@@ -75,7 +78,6 @@ if(ALPHA_MINER_HIP)
   if(HIPCC)
     set(HIP_OBJ ${CMAKE_CURRENT_BINARY_DIR}/hip_miner.o)
     set(HIP_SRC ${CMAKE_SOURCE_DIR}/src/hip_miner.hip)
-    # Optional single-arch offload (e.g. gfx1101) for faster WSL/native kernels.
     set(_HIP_ARCH_FLAG "")
     if(DEFINED HIP_OFFLOAD_ARCH AND NOT "${HIP_OFFLOAD_ARCH}" STREQUAL "")
       set(_HIP_ARCH_FLAG "--offload-arch=${HIP_OFFLOAD_ARCH}")
@@ -95,7 +97,7 @@ if(ALPHA_MINER_HIP)
               -o ${HIP_OBJ}
       DEPENDS ${HIP_SRC}
               ${CMAKE_SOURCE_DIR}/src/hip_miner.hpp
-              ${CMAKE_SOURCE_DIR}/src/job.hpp
+              ${CMAKE_SOURCE_DIR}/src/core_types.hpp
               ${CMAKE_SOURCE_DIR}/src/stratum.hpp
               ${CMAKE_SOURCE_DIR}/src/util.hpp
       COMMENT "Compiling HIP kernel with ${HIPCC} ${_HIP_ARCH_FLAG}"
@@ -103,12 +105,10 @@ if(ALPHA_MINER_HIP)
     )
     add_library(alpha_hip STATIC ${HIP_OBJ})
     set_target_properties(alpha_hip PROPERTIES LINKER_LANGUAGE CXX)
-    # Force hipcc as the final link driver so device code is linked correctly.
     set(CMAKE_CXX_LINK_EXECUTABLE
         "${HIPCC} <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
     target_compile_definitions(alpha-miner PRIVATE ALPHA_HAS_HIP=1)
     target_link_libraries(alpha-miner PRIVATE alpha_hip)
-    # Ensure object is rebuilt before linking alpha-miner
     add_dependencies(alpha-miner alpha_hip)
     message(STATUS "HIP backend: ENABLED (${HIPCC})")
   else()
@@ -129,11 +129,10 @@ if(ALPHA_MINER_CUDA)
       CUDA_SEPARABLE_COMPILATION OFF
       CUDA_ARCHITECTURES "75;80;86;89;90;100;120"
     )
-    # Cap regs so search_kernel fits many blocks/SM (Blackwell was spilling to 128 regs).
+    # Cap regs so kernels fit many blocks/SM
     target_compile_options(alpha-miner PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--maxrregcount=64>
     )
-    # Ensure host C++ objects can link CUDA runtime
     find_package(CUDAToolkit QUIET)
     if(CUDAToolkit_FOUND)
       target_link_libraries(alpha-miner PRIVATE CUDA::cudart)
@@ -147,4 +146,4 @@ if(ALPHA_MINER_CUDA)
 endif()
 
 install(TARGETS alpha-miner RUNTIME DESTINATION bin)
-install(FILES kernels/blake3_an.cl DESTINATION share/alpha-miner/kernels)
+install(FILES kernels/blake3_an.cl kernels/sha3d.cl DESTINATION share/alpha-miner/kernels)

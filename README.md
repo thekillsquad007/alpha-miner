@@ -1,142 +1,127 @@
-# alpha-miner
+# alpha-miner (modular multi-coin)
 
-Open-source **Alphanumeric (ALPHA)** pool miner for **NVIDIA and AMD** GPUs.
+Open-source **multi-coin GPU/CPU pool miner** with a plugin-style coin registry.
 
-**Developer fee: 2%** (second stratum session to the built-in fee wallet).
+| Coin | Algo | Protocol | Backends |
+|------|------|----------|----------|
+| **Lattica (LTA)** | `sha3d` — SHA3-256d over **80-byte** header | Bitcoin stratum v1 | **CUDA**, OpenCL, CPU |
+| **Alphanumeric (ALPHA)** | `blake3-an` — BLAKE3 over **92-byte** header | Monero-style stratum | CUDA, **HIP**, OpenCL, CPU |
 
-| Item | Value |
-|------|--------|
-| Algorithm | `blake3-an` — single BLAKE3 over the **92-byte** block header |
-| Consensus source | [OSXBasedAnon/alphanumeric `gpu-mining`](https://github.com/OSXBasedAnon/alphanumeric/tree/gpu-mining) |
-| Pool protocol | Monero-style JSON-RPC (`login` / `job` / `submit` / `keepalived`) |
-| Reference pool | `stratum+tcp://eu.rplant.xyz:7176` (also `na` / `asia`) |
-| Example multipool UI | [multipooldd.com/dashboard](https://multipooldd.com/dashboard) (RandomX coins today; same dashboard class of product) |
+Consensus references:
+
+- Lattica: [lattica-core/lattica](https://github.com/lattica-core/lattica) — `CBlockHeader::GetPoWHash` = SHA3-256d (FIPS 202)
+- ALPHA: [OSXBasedAnon/alphanumeric](https://github.com/OSXBasedAnon/alphanumeric) `gpu-mining`
+
+## Architecture (add a coin without a rewrite)
+
+```
+src/
+  core_types.hpp      Job / Share / IWorkSource / IShareSink / IMinerBackend
+  coin_registry.cpp   CoinProfile table (id, algo, protocol, header layout)
+  sha3.cpp            Portable SHA3-256 + SHA3-256d (Lattica PoW)
+  stratum.cpp         XMR-style login/job/submit (ALPHA)
+  stratum_btc.cpp     Bitcoin mining.subscribe/notify/submit (Lattica pools)
+  backends            CPU / OpenCL / CUDA / HIP dispatch by AlgoId
+kernels/
+  blake3_an.cl
+  sha3d.cl            Unrolled Keccak-f[1600] (matches Lattica in-tree miner)
+```
+
+**To add a new coin that reuses an existing algo:** append a `CoinProfile` in `coin_registry.cpp`.
+
+**To add a new algo:** implement host hash + target compare, add OpenCL/CUDA kernel, and branch in the backend workers.
+
+## Quick start — Lattica (SHA3-256d)
+
+```bash
+# Build (CUDA preferred on NVIDIA; OpenCL for AMD/Intel; CPU always)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Self-test
+./build/alpha-miner --list-coins
+./build/alpha-miner --benchmark -c lattica
+
+# Pool mine (Bitcoin stratum — e.g. coin-miners.info / LedgeRock)
+./build/alpha-miner -c lattica -o HOST:PORT -u lta1qYOURADDRESS.rig1 -b cuda
+./build/alpha-miner -c lattica -o HOST:PORT -u solo:lta1qYOURADDRESS -b opencl -k kernels
+
+# Multi-GPU
+./build/alpha-miner -c lattica -o HOST:PORT -u lta1q....rig1 -b cuda -d 0,1,2
+```
+
+Lattica PoW is **SHA3-256(SHA3-256(header[80]))** with LE uint256 target compare — bit-identical to the node’s `GetPoWHash`. CUDA and OpenCL kernels use a fully unrolled Keccak-f[1600] (same approach as the official `lattica-miner` OpenCL path) for maximum hashrate.
+
+## Quick start — ALPHA (blake3-an)
+
+```bash
+# NVIDIA CUDA
+./build/alpha-miner -c alpha -o eu.rplant.xyz:7176 -u YOUR_ALPHA.rig1 -b cuda
+
+# AMD HIP (ROCm)
+source scripts/env-wsl-hip.sh   # WSL only
+bash scripts/build-hip.sh
+./build-hip/alpha-miner -c alpha -o eu.rplant.xyz:7176 -u YOUR_ALPHA.rig1 -b hip
+```
+
+ALPHA developer fee: **2%** (second stratum session). Lattica has **no built-in devfee**.
 
 ## Backends
 
-| Backend | Hardware | Build flag |
-|---------|----------|------------|
-| **HIP** | **AMD Radeon (ROCm)** — preferred | `-DALPHA_MINER_HIP=ON` (default if `hipcc` found) |
-| **OpenCL** | AMD + NVIDIA | `-DALPHA_MINER_OPENCL=ON` |
-| **CPU** | any x86_64 | always |
-| **CUDA** | NVIDIA multi-GPU (sm_75–sm_120 incl. 30/40/50-series) | `-DALPHA_MINER_CUDA=ON` / release asset `alpha-miner-linux-cuda-x64` |
+| Backend | Hardware | Build flag | Algos |
+|---------|----------|------------|-------|
+| **CUDA** | NVIDIA multi-GPU (sm_75–sm_120) | `-DALPHA_MINER_CUDA=ON` | blake3-an, **sha3d** |
+| **HIP** | AMD Radeon (ROCm) | `-DALPHA_MINER_HIP=ON` | blake3-an |
+| **OpenCL** | AMD + NVIDIA + Intel | `-DALPHA_MINER_OPENCL=ON` | blake3-an, **sha3d** |
+| **CPU** | any | always | blake3-an, sha3d |
 
-## Quick start
+Auto backend order: CUDA → HIP (blake3 only) → OpenCL → CPU.
 
-### Build AMD HIP miner (ROCm / WSL)
+## CLI
 
-```bash
-cd alpha-miner
-# WSL2: loads librocdxg + HSA_ENABLE_DXG_DETECTION for /dev/dxg
-source scripts/env-wsl-hip.sh
-
-# Detect GPU (should print RX / gfx####)
-hipcc -O2 -x hip - <<'EOF' -o /tmp/hip_det && /tmp/hip_det
-#include <hip/hip_runtime.h>
-#include <cstdio>
-int main(){int n=0; hipGetDeviceCount(&n); printf("devices=%d\n",n);
-  for(int i=0;i<n;i++){hipDeviceProp_t p{}; hipGetDeviceProperties(&p,i);
-  printf("%d: %s %s\n",i,p.name,p.gcnArchName);} }
-EOF
-
-bash scripts/build-hip.sh
-# → build-hip/alpha-miner  and  dist/wsl-hip/
+```
+-c, --coin NAME         alpha | lattica
+-a, --algo NAME         blake3-an | sha3d
+-o, --url HOST:PORT     stratum endpoint
+-u, --user USER         wallet[.worker]
+-p, --pass PASS         password (default x)
+-b, --backend NAME      cpu | cuda | hip | opencl | auto
+-d, --devices LIST      0,1,2
+-k, --kernel-dir PATH   directory with blake3_an.cl / sha3d.cl
+-l, --list-devices
+    --list-coins
+    --benchmark
 ```
 
-**WSL note:** `/dev/kfd` is usually absent; the GPU is exposed as `/dev/dxg`. You need:
-- `HSA_ENABLE_DXG_DETECTION=1`
-- `librocdxg` on `LD_LIBRARY_PATH` (e.g. `/opt/rocm-7.2.3/lib` if hipcc is on 7.2.0)
+## Header layouts
 
-Manual cmake (after `source scripts/env-wsl-hip.sh`):
-
-```bash
-cmake -S . -B build-hip -DCMAKE_BUILD_TYPE=Release \
-  -DALPHA_MINER_HIP=ON -DALPHA_MINER_OPENCL=OFF \
-  -DHIP_OFFLOAD_ARCH=gfx1101   # from hipGetDeviceProperties
-cmake --build build-hip -j$(nproc)
-```
-
-### Build OpenCL / CPU (no ROCm)
-
-```bash
-sudo apt install -y build-essential cmake ocl-icd-opencl-dev opencl-headers
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DALPHA_MINER_HIP=OFF
-cmake --build build -j$(nproc)
-```
-
-### Mine on rplant (ALPHA port 7176)
-
-```bash
-# NVIDIA CUDA multi-GPU (release binary or build-cuda/)
-./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cuda
-./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cuda -d 0,1,2
-
-# AMD HIP (recommended on Radeon)
-./build-hip/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b hip
-
-# Auto: CUDA → HIP → OpenCL → CPU
-./build-hip/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1
-
-# OpenCL (AMD or NVIDIA)
-./build/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b opencl -k kernels/blake3_an.cl
-
-# CPU only
-./build/alpha-miner -o eu.rplant.xyz:7176 -u YOUR_ALPHA_ADDRESS.rig1 -b cpu -t 16
-
-# List GPUs
-./alpha-miner-linux-cuda-x64 -l
-```
-
-### Release binaries (GitHub Releases)
-
-See **[docs/USAGE.md](docs/USAGE.md)** for full commands per GPU / OS.
-
-| Asset | Platform |
-|-------|----------|
-| `alpha-miner-linux-cuda-x64-*.tar.gz` | **NVIDIA** Linux multi-GPU (CUDA) |
-| `alpha-miner-ubuntu-22.04-x64.tar.gz` | Linux OpenCL/CPU (AMD or NVIDIA) |
-| `alpha-miner-windows-x64.zip` | Windows OpenCL/CPU |
-| `alpha-hiveos-*.tar.gz` | HiveOS custom miner |
-
-Releases: https://github.com/thekillsquad007/alpha-miner/releases
-
-## Header / share format
-
-Matches `alphanumeric` `Block::calculate_hash_for_block` and `gpu_miner::build_header`:
+### Lattica (80 bytes)
 
 ```
 offset  size  field
-0       4     index (u32 LE)
+0       4     nVersion (u32 LE)
+4       32    hashPrevBlock
+36      32    hashMerkleRoot
+68      4     nTime (u32 LE)
+72      4     nBits (u32 LE)
+76      4     nNonce (u32 LE)   ← miner searches full 32-bit space
+= 80 bytes → SHA3-256d → LE uint256 ≤ target
+```
+
+Stratum submit: `mining.submit [worker, job_id, extranonce2, ntime, nonce]`.
+
+### ALPHA (92 bytes)
+
+```
+offset  size  field
+0       4     index
 4       32    previous_hash
-36      8     timestamp (u64 LE)
-44      8     nonce (u64 LE)   ← miner searches low 48 bits; pool binds high 16 (extranonce)
-52      8     difficulty (u64 LE)
+36      8     timestamp
+44      8     nonce (u64 LE)   ← low 48 free; high 16 pool extranonce
+52      8     difficulty
 60      32    merkle_root
-= 92 bytes → BLAKE3 → 32-byte hash
+= 92 bytes → BLAKE3 → BE byte-compare ≤ target
 ```
-
-Share is valid when `hash <= target` (big-endian byte compare). Submit:
-
-```json
-{"method":"submit","params":{"id":"<session>","job_id":"...","nonce":"<16 hex LE>","result":"<64 hex hash>"}}
-```
-
-## Solo GPU mining (node-integrated)
-
-The upstream node already includes a WGSL/wgpu GPU path:
-
-```bash
-git clone -b gpu-mining https://github.com/OSXBasedAnon/alphanumeric.git
-cd alphanumeric
-cargo build --release --features gpu_miner
-# then: mine <wallet> --gpu
-```
-
-That path is **solo against your local node**, not pool stratum. This repo is for **pool mining**.
-
-## multipooldd.com note
-
-[multipooldd.com](https://multipooldd.com/dashboard) is a multipool dashboard (currently JUNO/QRL/XMR RandomX). It is linked as an **example of pool UX**, not as an ALPHA endpoint. ALPHA stratum today is **rplant :7176** (`blake3-an`).
 
 ## License
 

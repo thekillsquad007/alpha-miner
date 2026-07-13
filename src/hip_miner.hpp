@@ -1,7 +1,6 @@
 #pragma once
 
-#include "job.hpp"
-#include "stratum.hpp"
+#include "core_types.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -11,13 +10,13 @@
 
 namespace alpha {
 
-// AMD HIP backend for blake3-an (ROCm / hipcc).
+// AMD HIP backend (blake3-an today; sha3d uses OpenCL on AMD if HIP path not selected).
 class HipMiner {
  public:
-  HipMiner(JobMux& jobs, ShareRouter& router, const std::vector<int>& devices);
+  HipMiner(miner::JobMux& jobs, miner::IShareSink& sink, const std::vector<int>& devices,
+           miner::AlgoId algo = miner::AlgoId::Blake3An);
   ~HipMiner();
 
-  // Returns false if no HIP device is available.
   bool init();
   void start();
   void stop();
@@ -29,9 +28,10 @@ class HipMiner {
  private:
   void worker(int device_id, int logical_id);
 
-  JobMux& jobs_;
-  ShareRouter& router_;
+  miner::JobMux& jobs_;
+  miner::IShareSink& sink_;
   std::vector<int> devices_;
+  miner::AlgoId algo_;
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> hashes_{0};
   std::vector<std::thread> workers_;

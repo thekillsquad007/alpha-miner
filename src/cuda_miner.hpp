@@ -1,7 +1,6 @@
 #pragma once
 
-#include "job.hpp"
-#include "stratum.hpp"
+#include "core_types.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -11,11 +10,11 @@
 
 namespace alpha {
 
-// NVIDIA CUDA multi-GPU backend for blake3-an.
-// One host thread + CUDA stream per selected device.
+// NVIDIA CUDA multi-GPU backend (blake3-an and sha3d).
 class CudaMiner {
  public:
-  CudaMiner(JobMux& jobs, ShareRouter& router, const std::vector<int>& devices);
+  CudaMiner(miner::JobMux& jobs, miner::IShareSink& sink, const std::vector<int>& devices,
+            miner::AlgoId algo);
   ~CudaMiner();
 
   bool init();
@@ -28,10 +27,15 @@ class CudaMiner {
 
  private:
   void worker(int device_id, int logical_id);
+  void worker_blake3(int device_id, int logical_id);
+  void worker_sha3d(int device_id, int logical_id);
+  bool init_blake3();
+  bool init_sha3d();
 
-  JobMux& jobs_;
-  ShareRouter& router_;
+  miner::JobMux& jobs_;
+  miner::IShareSink& sink_;
   std::vector<int> devices_;
+  miner::AlgoId algo_;
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> hashes_{0};
   std::vector<std::thread> workers_;
