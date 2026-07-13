@@ -48,9 +48,9 @@ jobs:
           OS_TAG="${{ matrix.os }}"
           mkdir -p dist
           install -m 0755 build/alpha-miner "dist/alpha-miner-${OS_TAG}-x64"
-          cp kernels/blake3_an.cl dist/
-          printf 'alpha-miner %s\n2%% developer fee enabled.\n' "$OS_TAG" > dist/README.txt
-          (cd dist && tar czf "${{ matrix.artifact }}" "alpha-miner-${OS_TAG}-x64" blake3_an.cl README.txt)
+          cp kernels/blake3_an.cl kernels/sha3d.cl dist/
+          printf 'alpha-miner %s multi-coin (lattica/sha3d, alpha/blake3-an)\nALPHA fee 2%%. Lattica fee none.\n' "$OS_TAG" > dist/README.txt
+          (cd dist && tar czf "${{ matrix.artifact }}" "alpha-miner-${OS_TAG}-x64" blake3_an.cl sha3d.cl README.txt)
 
       - name: Windows MSVC
         if: matrix.kind == 'windows'
@@ -72,8 +72,9 @@ jobs:
           mkdir dist 2>nul
           copy /Y build-win\alpha-miner.exe dist\alpha-miner-windows-x64.exe
           copy /Y kernels\blake3_an.cl dist\
-          echo 2%% developer fee enabled. > dist\README.txt
-          powershell -Command "Compress-Archive -Path dist\alpha-miner-windows-x64.exe,dist\blake3_an.cl,dist\README.txt -DestinationPath dist\alpha-miner-windows-x64.zip -Force"
+          copy /Y kernels\sha3d.cl dist\
+          echo multi-coin lattica/sha3d alpha/blake3-an. ALPHA fee 2%%. > dist\README.txt
+          powershell -Command "Compress-Archive -Path dist\alpha-miner-windows-x64.exe,dist\blake3_an.cl,dist\sha3d.cl,dist\README.txt -DestinationPath dist\alpha-miner-windows-x64.zip -Force"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -96,7 +97,7 @@ jobs:
           mkdir -p pkg/alpha
           tar xzf artifacts/alpha-miner-ubuntu-22.04-x64.tar.gz -C artifacts
           install -m 0755 artifacts/alpha-miner-ubuntu-22.04-x64 pkg/alpha/alpha
-          cp kernels/blake3_an.cl pkg/alpha/
+          cp kernels/blake3_an.cl kernels/sha3d.cl pkg/alpha/
           cp hiveos/* pkg/alpha/
           chmod +x pkg/alpha/h-*.sh pkg/alpha/alpha-supervise.sh pkg/alpha/alpha
           VER=$(grep CUSTOM_VERSION= pkg/alpha/h-manifest.conf | cut -d= -f2)
@@ -127,9 +128,12 @@ jobs:
           name: alpha-miner ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           body: |
-            ## alpha-miner
+            ## alpha-miner v0.3 — modular multi-coin
 
-            **Algo** `blake3-an` · **Fee** 2% · **Pool** `stratum+tcp://eu.rplant.xyz:7176` (also `na` / `asia`)
+            | Coin | Algo | Protocol | Fee |
+            |------|------|----------|-----|
+            | **Lattica (LTA)** | `sha3d` | Bitcoin stratum | none |
+            | **Alphanumeric** | `blake3-an` | XMR-style stratum | 2% |
 
             Full guide: [docs/USAGE.md](https://github.com/thekillsquad007/alpha-miner/blob/main/docs/USAGE.md)
 
@@ -137,57 +141,29 @@ jobs:
 
             | Asset | Use when |
             |-------|----------|
-            | `alpha-miner-linux-cuda-x64-*.tar.gz` | **NVIDIA** Linux (attach CUDA build if not in CI) |
-            | `alpha-miner-ubuntu-22.04-x64.tar.gz` | Linux OpenCL/CPU (AMD or NVIDIA) |
+            | `alpha-miner-linux-cuda-x64-*.tar.gz` | **NVIDIA** Linux multi-GPU (CUDA) |
+            | `alpha-miner-ubuntu-22.04-x64.tar.gz` | Linux OpenCL/CPU |
             | `alpha-miner-windows-x64.zip` | Windows OpenCL/CPU |
+            | `alpha-miner-wsl-hip-gfx1101.tar.gz` | AMD HIP / ROCm (WSL) |
             | `alpha-hiveos-*.tar.gz` | HiveOS custom miner (`alpha` folder) |
 
-            ### NVIDIA Linux (CUDA)
+            ### Lattica (NVIDIA CUDA)
 
             ```bash
-            tar xzf alpha-miner-linux-cuda-x64-*.tar.gz
-            ./alpha-miner-linux-cuda-x64 -l
-            ./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -p x -b cuda
-            ./alpha-miner-linux-cuda-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b cuda -d 0,1,2
+            tar xzf alpha-miner-linux-cuda-x64-v0.3.0.tar.gz
+            ./alpha-miner-linux-cuda-x64 -c lattica -o HOST:PORT -u lta1q....rig1 -b cuda
+            ./alpha-miner-linux-cuda-x64 -c lattica -o HOST:PORT -u lta1q....rig1 -b cuda -d 0,1,2
             ```
 
-            ### Linux OpenCL (AMD or NVIDIA)
+            ### ALPHA
 
             ```bash
-            tar xzf alpha-miner-ubuntu-22.04-x64.tar.gz
-            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -k blake3_an.cl
-            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -d 0,1 -k blake3_an.cl
-            ```
-
-            ### Windows
-
-            ```powershell
-            Expand-Archive alpha-miner-windows-x64.zip -DestinationPath alpha-miner
-            cd alpha-miner
-            .\alpha-miner-windows-x64.exe -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -k blake3_an.cl
-            .\alpha-miner-windows-x64.exe -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b opencl -d 0,1
-            ```
-
-            ### HiveOS
-
-            Install `alpha-hiveos-*.tar.gz` as **custom miner** (name `alpha`).
-
-            | Flight sheet | Value |
-            |--------------|--------|
-            | Wallet | `YOUR_ADDRESS.worker` |
-            | Pool URL | `stratum+tcp://eu.rplant.xyz:7176` |
-            | Pass | `x` |
-            | Extra | `-b opencl` or `-b opencl -d 0,1,2` (empty = auto) |
-
-            ### CPU
-
-            ```bash
-            ./alpha-miner-ubuntu-22.04-x64 -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.cpu1 -b cpu -t 16
+            ./alpha-miner-linux-cuda-x64 -c alpha -o eu.rplant.xyz:7176 -u YOUR_ADDRESS.rig1 -b cuda
             ```
 
             ### Flags
 
-            `-o` pool · `-u` wallet.worker · `-p` pass · `-b` cuda\|hip\|opencl\|cpu\|auto · `-d` GPUs · `-k` OpenCL kernel · `-l` list GPUs · `-t` CPU threads
+            `-c` coin · `-o` pool · `-u` wallet.worker · `-p` pass · `-b` cuda\|hip\|opencl\|cpu\|auto · `-d` GPUs · `-k` kernel dir · `-l` list GPUs · `-t` CPU threads
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

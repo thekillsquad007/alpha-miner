@@ -288,7 +288,8 @@ void BtcStratumClient::rebuild_job(JobBoard& board) {
   if (!have_notify_ || extranonce1_hex_.empty()) return;
 
   // Roll extranonce2
-  std::vector<uint8_t> en2(static_cast<size_t>(std::max(extranonce2_size_, 1)), 0);
+  // (std::max) avoids Windows.h min/max macros
+  std::vector<uint8_t> en2(static_cast<size_t>((std::max)(extranonce2_size_, 1)), 0);
   uint64_t c = en2_counter_++;
   for (size_t i = 0; i < en2.size(); ++i) en2[i] = (uint8_t)((c >> (8 * i)) & 0xff);
 
