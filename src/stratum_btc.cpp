@@ -283,72 +283,168 @@ void BtcStratumClient::submit(const Share& share) {
             << " en2=" << en2 << std::endl;
 }
 
-void BtcStratumClient::rebuild_job(JobBoard& board) {
-  std::lock_guard<std::mutex> lock(job_mu_);
-  if (!have_notify_ || extranonce1_hex_.empty()) return;
-
-  // Roll extranonce2
-  // (std::max) avoids Windows.h min/max macros
-  std::vector<uint8_t> en2(static_cast<size_t>((std::max)(extranonce2_size_, 1)), 0);
-  uint64_t c = en2_counter_++;
-  for (size_t i = 0; i < en2.size(); ++i) en2[i] = (uint8_t)((c >> (8 * i)) & 0xff);
-
-  auto coinb1 = alpha::from_hex(coinb1_hex_);
-  auto coinb2 = alpha::from_hex(coinb2_hex_);
-  auto en1 = alpha::from_hex(extranonce1_hex_);
-  std::vector<uint8_t> coinbase;
-  coinbase.reserve(coinb1.size() + en1.size() + en2.size() + coinb2.size());
-  coinbase.insert(coinbase.end(), coinb1.begin(), coinb1.end());
-  coinbase.insert(coinbase.end(), en1.begin(), en1.end());
-  coinbase.insert(coinbase.end(), en2.begin(), en2.end());
-  coinbase.insert(coinbase.end(), coinb2.begin(), coinb2.end());
-
-  // Coinbase txid = SHA3-256(coinbase) for Lattica (single SHA3, not double).
-  std::array<uint8_t, 32> cb_hash{};
-  sha3_256(coinbase.data(), coinbase.size(), cb_hash.data());
-  auto merkle = sha3_merkle_root(cb_hash, merkle_branch_);
-
-  auto prev = stratum_prevhash_to_header(prevhash_hex_);
-  if (prev.size() != 32) {
-    std::cerr << "[btc-stratum] bad prevhash\n";
-    return;
+// Skip a JSON value starting at pos (string / array / object / number / literal).
+// Returns index just past the value, or npos on failure.
+static size_t skip_json_value(const std::string& j, size_t pos) {
+  while (pos < j.size() && (j[pos] == ' ' || j[pos] == '\t' || j[pos] == '\n' || j[pos] == '\r'))
+    ++pos;
+  if (pos >= j.size()) return std::string::npos;
+  if (j[pos] == '"') {
+    ++pos;
+    while (pos < j.size()) {
+      if (j[pos] == '\\' && pos + 1 < j.size()) {
+        pos += 2;
+        continue;
+      }
+      if (j[pos] == '"') return pos + 1;
+      ++pos;
+    }
+    return std::string::npos;
   }
+  if (j[pos] == '[' || j[pos] == '{') {
+    char open = j[pos], close = (open == '[') ? ']' : '}';
+    int depth = 0;
+    bool in_str = false;
+    for (; pos < j.size(); ++pos) {
+      char c = j[pos];
+      if (in_str) {
+        if (c == '\\' && pos + 1 < j.size()) {
+          ++pos;
+          continue;
+        }
+        if (c == '"') in_str = false;
+        continue;
+      }
+      if (c == '"') {
+        in_str = true;
+        continue;
+      }
+      if (c == open) ++depth;
+      else if (c == close) {
+        --depth;
+        if (depth == 0) return pos + 1;
+      }
+    }
+    return std::string::npos;
+  }
+  // number / true / false / null
+  while (pos < j.size() && j[pos] != ',' && j[pos] != ']' && j[pos] != '}') ++pos;
+  return pos;
+}
 
-  uint32_t version = hex_u32_be(version_hex_);
-  uint32_t nbits = hex_u32_be(nbits_hex_);
-  uint32_t ntime = hex_u32_be(ntime_hex_);
+static bool is_hex_string(const std::string& s) {
+  if (s.empty() || (s.size() % 2) != 0) return false;
+  for (char c : s) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+      return false;
+  }
+  return true;
+}
 
-  Job j;
-  j.algo = algo_;
-  j.target_mode = TargetMode::LittleEndianUint;
-  j.header_len = 80;
-  j.nonce_off = 76;
-  j.nonce_bytes = 4;
-  j.nonce_mask = 0xFFFFFFFFULL;
-  j.nonce_fixed = 0;
-  j.job_id = job_id_;
-  j.extranonce2_hex = alpha::to_hex(en2.data(), en2.size());
-  j.ntime_hex = ntime_hex_;
-  j.share_difficulty = difficulty_;
-  difficulty_to_target(difficulty_, j.target.data());
+// Parse mining.subscribe result: [ subscriptions, "extranonce1", extranonce2_size ]
+static bool parse_subscribe_result(const std::string& line, std::string& en1, int& en2_size) {
+  auto r = line.find("\"result\"");
+  if (r == std::string::npos) return false;
+  auto arr = line.find('[', r);
+  if (arr == std::string::npos) return false;
+  // Skip first element (subscriptions array/object)
+  size_t p = arr + 1;
+  p = skip_json_value(line, p);
+  if (p == std::string::npos) return false;
+  while (p < line.size() && (line[p] == ',' || line[p] == ' ' || line[p] == '\t')) ++p;
+  if (!next_json_string(line, p, en1)) return false;
+  if (!is_hex_string(en1)) return false;
+  while (p < line.size() && (line[p] == ',' || line[p] == ' ' || line[p] == '\t')) ++p;
+  if (p < line.size() && (line[p] >= '0' && line[p] <= '9')) {
+    en2_size = std::atoi(line.c_str() + p);
+    if (en2_size <= 0 || en2_size > 16) en2_size = 4;
+  } else {
+    en2_size = 4;
+  }
+  return true;
+}
 
-  // Assemble 80-byte header (Bitcoin layout, LE fields).
-  write_u32_le(j.header.data() + 0, version);
-  std::memcpy(j.header.data() + 4, prev.data(), 32);
-  std::memcpy(j.header.data() + 36, merkle.data(), 32);
-  write_u32_le(j.header.data() + 68, ntime);
-  write_u32_le(j.header.data() + 72, nbits);
-  write_u32_le(j.header.data() + 76, 0);  // nonce
+void BtcStratumClient::rebuild_job(JobBoard& board) {
+  try {
+    std::lock_guard<std::mutex> lock(job_mu_);
+    if (!have_notify_) return;
+    if (extranonce1_hex_.empty() || !is_hex_string(extranonce1_hex_)) {
+      std::cerr << "[btc-stratum] rebuild skipped: missing/invalid extranonce1='"
+                << extranonce1_hex_ << "'\n";
+      return;
+    }
 
-  board.set(j);
-  std::cout << "[btc-stratum] job=" << job_id_ << " diff=" << difficulty_
-            << " en2=" << j.extranonce2_hex << " branches=" << merkle_branch_.size() << std::endl;
+    // Roll extranonce2
+    // (std::max) avoids Windows.h min/max macros
+    std::vector<uint8_t> en2(static_cast<size_t>((std::max)(extranonce2_size_, 1)), 0);
+    uint64_t c = en2_counter_++;
+    for (size_t i = 0; i < en2.size(); ++i) en2[i] = (uint8_t)((c >> (8 * i)) & 0xff);
+
+    auto coinb1 = alpha::from_hex(coinb1_hex_);
+    auto coinb2 = alpha::from_hex(coinb2_hex_);
+    auto en1 = alpha::from_hex(extranonce1_hex_);
+    std::vector<uint8_t> coinbase;
+    coinbase.reserve(coinb1.size() + en1.size() + en2.size() + coinb2.size());
+    coinbase.insert(coinbase.end(), coinb1.begin(), coinb1.end());
+    coinbase.insert(coinbase.end(), en1.begin(), en1.end());
+    coinbase.insert(coinbase.end(), en2.begin(), en2.end());
+    coinbase.insert(coinbase.end(), coinb2.begin(), coinb2.end());
+
+    // Coinbase txid = SHA3-256(non-witness coinbase) for Lattica.
+    std::array<uint8_t, 32> cb_hash{};
+    sha3_256(coinbase.data(), coinbase.size(), cb_hash.data());
+    auto merkle = sha3_merkle_root(cb_hash, merkle_branch_);
+
+    auto prev = stratum_prevhash_to_header(prevhash_hex_);
+    if (prev.size() != 32) {
+      std::cerr << "[btc-stratum] bad prevhash\n";
+      return;
+    }
+
+    uint32_t version = hex_u32_be(version_hex_);
+    uint32_t nbits = hex_u32_be(nbits_hex_);
+    uint32_t ntime = hex_u32_be(ntime_hex_);
+
+    Job j;
+    j.algo = algo_;
+    j.target_mode = TargetMode::LittleEndianUint;
+    j.header_len = 80;
+    j.nonce_off = 76;
+    j.nonce_bytes = 4;
+    j.nonce_mask = 0xFFFFFFFFULL;
+    j.nonce_fixed = 0;
+    j.job_id = job_id_;
+    j.extranonce2_hex = alpha::to_hex(en2.data(), en2.size());
+    j.ntime_hex = ntime_hex_;
+    j.share_difficulty = difficulty_;
+    difficulty_to_target(difficulty_, j.target.data());
+
+    // Assemble 80-byte header (Bitcoin layout, LE fields).
+    write_u32_le(j.header.data() + 0, version);
+    std::memcpy(j.header.data() + 4, prev.data(), 32);
+    std::memcpy(j.header.data() + 36, merkle.data(), 32);
+    write_u32_le(j.header.data() + 68, ntime);
+    write_u32_le(j.header.data() + 72, nbits);
+    write_u32_le(j.header.data() + 76, 0);  // nonce
+
+    board.set(j);
+    std::cout << "[btc-stratum] job=" << job_id_ << " diff=" << difficulty_
+              << " en2=" << j.extranonce2_hex << " branches=" << merkle_branch_.size()
+              << std::endl;
+  } catch (const std::exception& e) {
+    std::cerr << "[btc-stratum] rebuild_job failed: " << e.what() << "\n";
+  }
 }
 
 void BtcStratumClient::handle_line(const std::string& line, JobBoard& board) {
+  // Only treat as server method push when a "method" field is present.
+  // Subscribe *results* embed "mining.notify"/"mining.set_difficulty" as
+  // subscription names and must not be handled here.
+  const bool is_method_push =
+      line.find("\"method\"") != std::string::npos || line.find("\"method\" ") != std::string::npos;
+
   // mining.set_difficulty
-  if (line.find("mining.set_difficulty") != std::string::npos ||
-      line.find("\"method\": \"mining.set_difficulty\"") != std::string::npos) {
+  if (is_method_push && line.find("mining.set_difficulty") != std::string::npos) {
     auto p = line.find("\"params\"");
     if (p != std::string::npos) {
       p = line.find('[', p);
@@ -365,7 +461,7 @@ void BtcStratumClient::handle_line(const std::string& line, JobBoard& board) {
   }
 
   // mining.notify
-  if (line.find("mining.notify") != std::string::npos) {
+  if (is_method_push && line.find("mining.notify") != std::string::npos) {
     std::string jid, prev, c1, c2, ver, bits, ntime;
     std::vector<std::string> merkle;
     bool clean = true;
@@ -391,34 +487,23 @@ void BtcStratumClient::handle_line(const std::string& line, JobBoard& board) {
     return;
   }
 
-  // subscribe result: typically result: [ [..], "extranonce1", extranonce2_size ]
-  if (line.find("\"id\":1") != std::string::npos && line.find("\"result\"") != std::string::npos &&
-      line.find("error\":null") != std::string::npos) {
-    // Find extranonce1: second top-level string in result after subscriptions array
-    auto r = line.find("\"result\"");
-    if (r != std::string::npos) {
-      // After first ], look for hex string
-      auto br = line.find('[', r);
-      if (br != std::string::npos) {
-        auto inner_end = line.find(']', br + 1);
-        // may be nested [[...]]
-        if (inner_end != std::string::npos && inner_end + 1 < line.size() &&
-            line[inner_end + 1] == ']')
-          inner_end++;
-        size_t p = (inner_end == std::string::npos) ? r : inner_end + 1;
-        std::string en1;
-        if (next_json_string(line, p, en1)) {
-          extranonce1_hex_ = en1;
-          // next number = extranonce2_size
-          while (p < line.size() && (line[p] == ',' || line[p] == ' ' || line[p] == '\t')) ++p;
-          if (p < line.size() && (line[p] >= '0' && line[p] <= '9')) {
-            extranonce2_size_ = std::atoi(line.c_str() + p);
-            if (extranonce2_size_ <= 0 || extranonce2_size_ > 16) extranonce2_size_ = 4;
-          }
-          std::cout << "[btc-stratum] subscribed en1=" << extranonce1_hex_
-                    << " en2_size=" << extranonce2_size_ << std::endl;
-        }
+  // subscribe result: typically result: [ [subscriptions...], "extranonce1", extranonce2_size ]
+  if (line.find("\"id\":1") != std::string::npos && line.find("\"result\"") != std::string::npos) {
+    std::string en1;
+    int en2 = 4;
+    if (parse_subscribe_result(line, en1, en2)) {
+      extranonce1_hex_ = en1;
+      extranonce2_size_ = en2;
+      std::cout << "[btc-stratum] subscribed en1=" << extranonce1_hex_
+                << " en2_size=" << extranonce2_size_ << std::endl;
+      if (have_notify_ && board_) {
+        // Notify may have arrived before subscribe parse completed (unlikely) — rebuild.
+        rebuild_job(board);
       }
+    } else if (line.find("\"error\":null") != std::string::npos ||
+               line.find("\"error\": null") != std::string::npos) {
+      std::cerr << "[btc-stratum] failed to parse subscribe result: " << line.substr(0, 200)
+                << "\n";
     }
   }
 
@@ -446,6 +531,8 @@ void BtcStratumClient::run() {
       continue;
     }
     connected_ = true;
+    extranonce1_hex_.clear();
+    have_notify_ = false;
     // mining.subscribe
     {
       std::ostringstream oss;
